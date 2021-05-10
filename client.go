@@ -12,11 +12,17 @@ import (
 
 const cacheInProgressSentinel = "__csc:cip__"
 
+// in milliseconds
+const defaultExpireCheckInterval = 3000
+
 var debugMode = os.Getenv("__CSC_DEBUG") != ""
 var debugLogger = log.New(os.Stdout, "csc-debug ", log.Ldate|log.Lmicroseconds)
 var Logger = log.New(os.Stdout, "csc ", log.Ldate|log.Lmicroseconds)
 
 var ErrClientFailed = errors.New("client has failed")
+
+// this is used so it can be overridden in testing
+var nowFunc = time.Now
 
 type Client struct {
 	pool *ClientPool
@@ -27,20 +33,19 @@ type Client struct {
 	cache *cache
 	// used as bool with atomic store/load
 	failed int32
-	// stats
-	hits   int64
-	misses int64
 }
 
 type ClientStats struct {
-	Hits       int64 `json:"hits"`
-	Misses     int64 `json:"misses"`
-	NumEntries int   `json:"num_entries"`
+	Hits       uint64 `json:"hits"`
+	Misses     uint64 `json:"misses"`
+	Evictions  uint64 `json:"evictions"`
+	Expired    uint64 `json:"expired"`
+	NumEntries int    `json:"num_entries"`
 }
 
 func (c *Client) Get(key string) ([]byte, error) {
 	if debugMode {
-		debugLogger.Printf("client.get: %p, %s\n", c, key)
+		debugLogger.Printf("client.get: %p k=%s\n", c, key)
 	}
 
 	if c.hasFailed() {
@@ -48,11 +53,9 @@ func (c *Client) Get(key string) ([]byte, error) {
 	}
 
 	if data := c.cache.get(key); data != nil {
-		c.hit()
 		return data, nil
 	}
 
-	c.miss()
 	c.cache.set(key, []byte(cacheInProgressSentinel), 30)
 
 	rpl, err := c.dconn.Do("GET", key)
@@ -73,6 +76,7 @@ func (c *Client) Get(key string) ([]byte, error) {
 		return nil, err
 	}
 
+	// only set to cache if we see the sentinel, if not, the key has been invalidated during processing
 	if string(c.cache.get(key)) == cacheInProgressSentinel {
 		c.cache.set(key, data, expire)
 	}
@@ -80,13 +84,25 @@ func (c *Client) Get(key string) ([]byte, error) {
 	return data, nil
 }
 
-func (c *Client) GetMulti(keys []string) ([]byte, error) {
-	return nil, nil
+// todo(jhamren): if perf needs it, implement this properly with MGET
+func (c *Client) GetMulti(keys []string) ([][]byte, error) {
+	var results [][]byte
+
+	for _, k := range keys {
+		d, err := c.Get(k)
+		if err != nil {
+			return nil, err
+		}
+
+		results = append(results, d)
+	}
+
+	return results, nil
 }
 
 func (c *Client) Set(key string, value []byte, expires int) error {
 	if debugMode {
-		debugLogger.Printf("client.set: %p, %s, %s\n", c, key, value)
+		debugLogger.Printf("client.set: %p k=%s v=%s\n", c, key, value)
 	}
 
 	if c.hasFailed() {
@@ -104,7 +120,7 @@ func (c *Client) Set(key string, value []byte, expires int) error {
 
 func (c *Client) Delete(key string) error {
 	if debugMode {
-		debugLogger.Printf("client.delete: %p, %s\n", c, key)
+		debugLogger.Printf("client.delete: %p k=%s\n", c, key)
 	}
 
 	if c.hasFailed() {
@@ -120,28 +136,17 @@ func (c *Client) Delete(key string) error {
 }
 
 func (c *Client) Stats() ClientStats {
-	c.cache.RLock()
-	defer c.cache.RUnlock()
+	c.cache.Lock()
+	num := len(c.cache.entries)
+	c.cache.Unlock()
 
 	return ClientStats{
-		Hits:       atomic.LoadInt64(&c.hits),
-		Misses:     atomic.LoadInt64(&c.misses),
-		NumEntries: len(c.cache.entries),
+		Hits:       atomic.LoadUint64(&c.cache.hits),
+		Misses:     atomic.LoadUint64(&c.cache.misses),
+		Expired:    atomic.LoadUint64(&c.cache.expired),
+		Evictions:  atomic.LoadUint64(&c.cache.evictions),
+		NumEntries: num,
 	}
-}
-
-func (c *Client) hit() {
-	if debugMode {
-		debugLogger.Printf("client.hit: %p\n", c)
-	}
-	atomic.AddInt64(&c.hits, 1)
-}
-
-func (c *Client) miss() {
-	if debugMode {
-		debugLogger.Printf("client.miss: %p\n", c)
-	}
-	atomic.AddInt64(&c.misses, 1)
 }
 
 func (c *Client) markFailed() {
@@ -149,15 +154,7 @@ func (c *Client) markFailed() {
 }
 
 func (c *Client) reset() error {
-	if _, err := c.dconn.Do("RESET"); err != nil {
-		return err
-	}
-
 	if err := c.dconn.Close(); err != nil {
-		return err
-	}
-
-	if _, err := c.iconn.Do("RESET"); err != nil {
 		return err
 	}
 
@@ -165,6 +162,15 @@ func (c *Client) reset() error {
 		return err
 	}
 
+	return nil
+}
+
+func (c *Client) Close() error {
+	if c.hasFailed() {
+		return c.reset()
+	}
+
+	c.pool.putFree(c)
 	return nil
 }
 
@@ -180,16 +186,25 @@ func (c *Client) invalidationsReceiver() {
 
 	fails := 0
 	for {
-		// todo(jhamren): handle failure
-		if fails > 5 {
+		if fails >= 5 {
 			Logger.Println("invalidation receive failed after 5 retries")
 			c.markFailed()
 			return
 		}
 
-		values, err := redis.Values(c.iconn.Receive())
+		reply, err := c.iconn.Receive()
 		if err != nil {
 			fails++
+			Logger.Println("failed to receive from subscription")
+			continue
+		}
+
+		if s, ok := reply.(string); ok && s == "RESET" {
+			return
+		}
+
+		values, err := redis.Values(reply, err)
+		if err != nil {
 			Logger.Println("failed to parse invalidation reply")
 			continue
 		}
@@ -208,7 +223,7 @@ func (c *Client) invalidationsReceiver() {
 		}
 
 		if debugMode {
-			debugLogger.Printf("client.invalidating: %p, %s\n", c, keys)
+			debugLogger.Printf("client.invalidating: %p k=%s\n", c, keys)
 		}
 
 		c.cache.delete(keys...)
@@ -216,29 +231,14 @@ func (c *Client) invalidationsReceiver() {
 }
 
 func (c *Client) expireWatcher() {
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(time.Millisecond * defaultExpireCheckInterval)
 	defer ticker.Stop()
 
 	for !c.hasFailed() {
 		select {
 		// todo(jhamren): cancel context case
 		case <-ticker.C:
-			var keys []string
-
-			now := time.Now()
-			c.cache.RLock()
-			for k, entry := range c.cache.entries {
-				if !entry.expires.After(now) {
-					keys = append(keys, k)
-				}
-			}
-			c.cache.RUnlock()
-
-			if len(keys) > 0 {
-				for _, k := range keys {
-					c.cache.delete(k)
-				}
-			}
+			c.cache.evictExpired()
 		}
 	}
 }

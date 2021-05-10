@@ -8,15 +8,15 @@ import (
 func TestClient(t *testing.T) {
 	key := "foo"
 
-	pool := NewDefaultClientPool(":6379")
-	c, err := pool.GetClient()
+	pool := NewClientPool(ClientPoolOptions{RedisAddress: ":6379", MaxEntries: 10000})
+	c, err := pool.Get()
 	if err != nil {
 		t.Fatalf("failed to get client from pool: %v", err)
 	}
 
 	_, err = c.Get(key)
 
-	c2, err := pool.GetClient()
+	c2, err := pool.Get()
 	if err != nil {
 		t.Fatalf("failed to get client from pool: %v", err)
 	}
@@ -36,8 +36,8 @@ func TestClient_Set(t *testing.T) {
 	key := "foo"
 	value := "123456"
 
-	pool := NewDefaultClientPool(":6379")
-	c1, err := pool.GetClient()
+	pool := NewClientPool(ClientPoolOptions{RedisAddress: ":6379", MaxEntries: 10000})
+	c1, err := pool.Get()
 	if err != nil {
 		t.Fatalf("failed to get client from pool: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestClient_Set(t *testing.T) {
 		t.Fatalf("failed to set: %v", err)
 	}
 
-	c2, err := pool.GetClient()
+	c2, err := pool.Get()
 	if err != nil {
 		t.Fatalf("failed to get client from pool: %v", err)
 	}
@@ -60,20 +60,22 @@ func TestClient_Set(t *testing.T) {
 		t.FailNow()
 	}
 
-	if c2.Stats().NumEntries != 1 {
+	stats := c2.Stats()
+	if stats.NumEntries != 1 {
 		t.FailNow()
 	}
 
-	if c2.Stats().Misses != 1 {
+	if stats.Misses != 1 {
 		t.FailNow()
 	}
 
+	hitsPre := c2.Stats().Hits
 	if _, err := c2.Get(key); err != nil {
 		t.Fatalf("failed to get: %v", err)
 	}
 
-	if c2.Stats().Hits != 1 {
-		t.FailNow()
+	if int(c2.Stats().Hits-hitsPre) != 1 {
+		t.Fatalf("stats.Hits: %d", stats.Hits)
 	}
 
 	if err := c1.Delete(key); err != nil {

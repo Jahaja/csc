@@ -1,7 +1,10 @@
 package csc
 
 import (
+	"math"
+	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -11,13 +14,17 @@ type cacheEntry struct {
 }
 
 type cache struct {
-	sync.RWMutex
+	sync.Mutex
 	maxEntries int
+	hits       uint64
+	misses     uint64
+	evictions  uint64
+	expired    uint64
 	entries    map[string]cacheEntry
 }
 
 const initialCacheSize = 128
-const deleteOnFullFactor = 0.05
+const evictSizeFactor = 0.05
 
 func newCache(maxEntries int) *cache {
 	return &cache{
@@ -28,7 +35,7 @@ func newCache(maxEntries int) *cache {
 
 func (c *cache) delete(keys ...string) {
 	if debugMode {
-		debugLogger.Printf("cache.delete: %p, %s\n", c, keys)
+		debugLogger.Printf("cache.delete: %p k=%s\n", c, keys)
 	}
 
 	c.Lock()
@@ -38,65 +45,98 @@ func (c *cache) delete(keys ...string) {
 	}
 }
 
-func (c *cache) set(key string, data []byte, expires int) {
+// lock is held
+func (c *cache) evictSize() int {
+	s := int(math.Ceil(evictSizeFactor * float64(len(c.entries))))
+	if s == 0 {
+		s = 1
+	}
+
+	return s
+}
+
+// crude eviction if the cache is full, deletes a percentage of the keys from a random offset
+// lock is held
+// todo(jhamren): make this smarter, like LRU
+func (c *cache) evictKeys() {
+	size := c.evictSize()
+
+	rand.Seed(nowFunc().UnixNano())
+	start := rand.Intn(len(c.entries) - size)
+
 	if debugMode {
-		debugLogger.Printf("cache.set: %p, k: %s, d: %s, ex: %d\n", c, key, data, expires)
+		debugLogger.Printf("cache.evict: %p st=%d si=%d l=%ds\n", c, start, size, len(c.entries))
+	}
+
+	i := 0
+	for k := range c.entries {
+		if i < start {
+			i++
+			continue
+		}
+
+		if debugMode {
+			debugLogger.Printf("cache.evict: %p k=%s\n", c, k)
+		}
+
+		delete(c.entries, k)
+		c.evictions++
+
+		size--
+		if size == 0 {
+			break
+		}
+
+		i++
+	}
+}
+
+func (c *cache) set(key string, value []byte, expires int) {
+	if debugMode {
+		debugLogger.Printf("cache.set: %p k=%s v=%s ex=%d\n", c, key, value, expires)
 	}
 
 	c.Lock()
 	defer c.Unlock()
 
-	// crude deletion if the cache is full, deletes a percentage of the keys in iteration order
-	// todo(jhamren): make this smarter, like LRU
 	num := len(c.entries)
 	if num >= c.maxEntries {
-		i := int(deleteOnFullFactor * float32(num))
-		if i == 0 {
-			i = 1
-		}
-
-		for k := range c.entries {
-			Logger.Printf("evicting cache key: %p, %s\n", c, k)
-			delete(c.entries, k)
-
-			i--
-			if i == 0 {
-				break
-			}
-		}
+		c.evictKeys()
 	}
 
 	c.entries[key] = cacheEntry{
-		data:    data,
-		expires: time.Now().Add(time.Second * time.Duration(expires)),
+		data:    value,
+		expires: nowFunc().Add(time.Second * time.Duration(expires)),
 	}
 }
 
 func (c *cache) get(key string) []byte {
 	if debugMode {
-		debugLogger.Printf("cache.get: %p, %s\n", c, key)
+		debugLogger.Printf("cache.get: %p k=%s\n", c, key)
 	}
 
-	c.RLock()
-	defer c.RUnlock()
-
+	c.Lock()
 	ce, ok := c.entries[key]
+	c.Unlock()
+
 	if ok {
+		atomic.AddUint64(&c.hits, 1)
 		return ce.data
 	}
 
+	atomic.AddUint64(&c.misses, 1)
 	return nil
 }
 
 func (c *cache) getm(keys ...string) [][]byte {
 	if debugMode {
-		debugLogger.Printf("cache.getm: %p, %s\n", c, keys)
+		debugLogger.Printf("cache.getm: %p k=%s\n", c, keys)
 	}
 
 	var results [][]byte
 
-	c.RLock()
-	defer c.RUnlock()
+	c.Lock()
+	defer c.Unlock()
 
 	for _, k := range keys {
 		e, _ := c.entries[k]
@@ -104,4 +144,26 @@ func (c *cache) getm(keys ...string) [][]byte {
 	}
 
 	return results
+}
+
+func (c *cache) evictExpired() {
+	var keys []string
+
+	now := nowFunc()
+	c.Lock()
+	for k, entry := range c.entries {
+		if entry.expires.Before(now) {
+			keys = append(keys, k)
+		}
+	}
+	c.Unlock()
+
+	if len(keys) > 0 {
+		if debugMode {
+			debugLogger.Printf("client.expire: %p k=%s\n", c, keys)
+		}
+
+		atomic.AddUint64(&c.expired, uint64(len(keys)))
+		c.delete(keys...)
+	}
 }
