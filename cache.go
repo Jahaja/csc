@@ -27,6 +27,10 @@ const initialCacheSize = 128
 const evictSizeFactor = 0.05
 
 func newCache(maxEntries int) *cache {
+	if maxEntries <= 0 {
+		panic("max entries must not be 0")
+	}
+
 	return &cache{
 		maxEntries: maxEntries,
 		entries:    make(map[string]cacheEntry, initialCacheSize),

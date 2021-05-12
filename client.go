@@ -19,21 +19,10 @@ var debugMode = os.Getenv("__CSC_DEBUG") != ""
 var debugLogger = log.New(os.Stdout, "csc-debug ", log.Ldate|log.Lmicroseconds)
 var Logger = log.New(os.Stdout, "csc ", log.Ldate|log.Lmicroseconds)
 
-var ErrClientFailed = errors.New("client has failed")
+var ErrClosed = errors.New("client is closed")
 
 // this is used so it can be overridden in testing
 var nowFunc = time.Now
-
-type Client struct {
-	pool *ClientPool
-	// data connection
-	dconn redis.Conn
-	// invalidation connection
-	iconn redis.Conn
-	cache *cache
-	// used as bool with atomic store/load
-	failed int32
-}
 
 type ClientStats struct {
 	Hits       uint64 `json:"hits"`
@@ -43,13 +32,31 @@ type ClientStats struct {
 	NumEntries int    `json:"num_entries"`
 }
 
-func (c *Client) Get(key string) ([]byte, error) {
+type client struct {
+	conn   redis.Conn
+	cache  *cache
+	closed uint32
+}
+
+type TrackingClient struct {
+	client
+
+	pool *TrackingPool
+	// invalidation connection
+	iconn redis.Conn
+}
+
+type BroadcastingClient struct {
+	client
+}
+
+func (c *client) Get(key string) ([]byte, error) {
 	if debugMode {
 		debugLogger.Printf("client.get: %p k=%s\n", c, key)
 	}
 
-	if c.hasFailed() {
-		return nil, ErrClientFailed
+	if c.isClosed() {
+		return nil, ErrClosed
 	}
 
 	if data := c.cache.get(key); data != nil {
@@ -58,7 +65,7 @@ func (c *Client) Get(key string) ([]byte, error) {
 
 	c.cache.set(key, []byte(cacheInProgressSentinel), 30)
 
-	rpl, err := c.dconn.Do("GET", key)
+	rpl, err := c.conn.Do("GET", key)
 	if err != nil {
 		c.cache.delete(key)
 		return nil, err
@@ -70,7 +77,7 @@ func (c *Client) Get(key string) ([]byte, error) {
 		return nil, err
 	}
 
-	expire, err := redis.Int(c.dconn.Do("TTL", key))
+	expire, err := redis.Int(c.conn.Do("TTL", key))
 	if err != nil {
 		c.cache.delete(key)
 		return nil, err
@@ -85,7 +92,7 @@ func (c *Client) Get(key string) ([]byte, error) {
 }
 
 // todo(jhamren): if perf needs it, implement this properly with MGET
-func (c *Client) GetMulti(keys []string) ([][]byte, error) {
+func (c *client) GetMulti(keys []string) ([][]byte, error) {
 	var results [][]byte
 
 	for _, k := range keys {
@@ -100,16 +107,16 @@ func (c *Client) GetMulti(keys []string) ([][]byte, error) {
 	return results, nil
 }
 
-func (c *Client) Set(key string, value []byte, expires int) error {
+func (c *client) Set(key string, value []byte, expires int) error {
 	if debugMode {
 		debugLogger.Printf("client.set: %p k=%s v=%s\n", c, key, value)
 	}
 
-	if c.hasFailed() {
-		return ErrClientFailed
+	if c.isClosed() {
+		return ErrClosed
 	}
 
-	if _, err := c.dconn.Do("SETEX", key, expires, value); err != nil {
+	if _, err := c.conn.Do("SETEX", key, expires, value); err != nil {
 		return err
 	}
 
@@ -118,16 +125,16 @@ func (c *Client) Set(key string, value []byte, expires int) error {
 	return err
 }
 
-func (c *Client) Delete(key string) error {
+func (c *client) Delete(key string) error {
 	if debugMode {
 		debugLogger.Printf("client.delete: %p k=%s\n", c, key)
 	}
 
-	if c.hasFailed() {
-		return ErrClientFailed
+	if c.isClosed() {
+		return ErrClosed
 	}
 
-	if _, err := c.dconn.Do("DEL", key); err != nil {
+	if _, err := c.conn.Do("DEL", key); err != nil {
 		return err
 	}
 
@@ -135,7 +142,7 @@ func (c *Client) Delete(key string) error {
 	return nil
 }
 
-func (c *Client) Stats() ClientStats {
+func (c *client) Stats() ClientStats {
 	c.cache.Lock()
 	num := len(c.cache.entries)
 	c.cache.Unlock()
@@ -149,96 +156,38 @@ func (c *Client) Stats() ClientStats {
 	}
 }
 
-func (c *Client) markFailed() {
-	atomic.StoreInt32(&c.failed, 1)
+func (c *client) setClosed() {
+	atomic.StoreUint32(&c.closed, 1)
 }
 
-func (c *Client) reset() error {
-	if err := c.dconn.Close(); err != nil {
-		return err
-	}
+func (c *client) isClosed() bool {
+	return atomic.LoadUint32(&c.closed) == 1
+}
 
-	if err := c.iconn.Close(); err != nil {
-		return err
-	}
-
+func (c *client) Close() error {
+	c.setClosed()
 	return nil
 }
 
-func (c *Client) Close() error {
-	if c.hasFailed() {
-		return c.reset()
+func (c *TrackingClient) Close() error {
+	// if the client is closed/done, close the connections, otherwise put it back into the pool
+	if c.isClosed() {
+		if err := c.conn.Close(); err != nil {
+			return err
+		}
+
+		if err := c.iconn.Close(); err != nil {
+			return err
+		}
+
+		return nil
 	}
 
 	c.pool.putFree(c)
 	return nil
 }
 
-func (c *Client) hasFailed() bool {
-	return atomic.LoadInt32(&c.failed) == 1
-}
-
-func (c *Client) invalidationsReceiver() {
-	if _, err := c.iconn.Do("SUBSCRIBE", "__redis__:invalidate"); err != nil {
-		Logger.Println("failed to setup invalidation subscription:", err.Error())
-		return
-	}
-
-	fails := 0
-	for {
-		if fails >= 5 {
-			Logger.Println("invalidation receive failed after 5 retries")
-			c.markFailed()
-			return
-		}
-
-		reply, err := c.iconn.Receive()
-		if err != nil {
-			fails++
-			Logger.Println("failed to receive from subscription")
-			continue
-		}
-
-		if s, ok := reply.(string); ok && s == "RESET" {
-			return
-		}
-
-		values, err := redis.Values(reply, err)
-		if err != nil {
-			Logger.Println("failed to parse invalidation reply")
-			continue
-		}
-
-		replyType, _ := redis.String(values[0], nil)
-		if replyType != "message" {
-			Logger.Println("subscription reply is not a message")
-			continue
-		}
-
-		// values[1] is channel name, skip for now
-		keys, err := redis.Strings(values[2], nil)
-		if err != nil && err != redis.ErrNil {
-			Logger.Println("failed to parse subscription reply keys:", err.Error())
-			continue
-		}
-
-		if debugMode {
-			debugLogger.Printf("client.invalidating: %p k=%s\n", c, keys)
-		}
-
-		c.cache.delete(keys...)
-	}
-}
-
-func (c *Client) expireWatcher() {
-	ticker := time.NewTicker(time.Millisecond * defaultExpireCheckInterval)
-	defer ticker.Stop()
-
-	for !c.hasFailed() {
-		select {
-		// todo(jhamren): cancel context case
-		case <-ticker.C:
-			c.cache.evictExpired()
-		}
-	}
+func (c *BroadcastingClient) Close() error {
+	c.client.Close()
+	return c.conn.Close()
 }

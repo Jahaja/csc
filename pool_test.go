@@ -36,3 +36,15 @@ func TestClientPool(t *testing.T) {
 		t.Fatal("waited is not 2")
 	}
 }
+
+func TestBroadcastPool(t *testing.T) {
+	pool := NewBroadcastClientPool(ClientPoolOptions{MaxEntries: 1000, RedisAddress: ":6379"})
+	pool.Start()
+
+	time.Sleep(time.Millisecond * 100)
+
+	_, err := pool.Get()
+	if err != nil {
+		t.FailNow()
+	}
+}
