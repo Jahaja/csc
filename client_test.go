@@ -8,7 +8,7 @@ import (
 func TestClient(t *testing.T) {
 	key := "foo"
 
-	pool := NewClientPool(ClientPoolOptions{RedisAddress: ":6379", MaxEntries: 10000})
+	pool := NewTrackingPool(ClientPoolOptions{RedisAddress: ":6379", MaxEntries: 10000})
 	c, err := pool.Get()
 	if err != nil {
 		t.Fatalf("failed to get client from pool: %v", err)
@@ -36,7 +36,7 @@ func TestClient_Set(t *testing.T) {
 	key := "foo"
 	value := "123456"
 
-	pool := NewClientPool(ClientPoolOptions{RedisAddress: ":6379", MaxEntries: 10000})
+	pool := NewTrackingPool(ClientPoolOptions{RedisAddress: ":6379", MaxEntries: 10000})
 	c1, err := pool.Get()
 	if err != nil {
 		t.Fatalf("failed to get client from pool: %v", err)
@@ -89,7 +89,7 @@ func TestBroadcastingClient(t *testing.T) {
 	key := "foo"
 	value := "123456"
 
-	pool := NewBroadcastClientPool(ClientPoolOptions{MaxEntries: 100, RedisAddress: ":6379"})
+	pool := NewBroadcastingPool(ClientPoolOptions{MaxEntries: 100, RedisAddress: ":6379"})
 	pool.Start()
 
 	time.Sleep(time.Millisecond * 100)

@@ -35,7 +35,7 @@ type TrackingPool struct {
 	free []*TrackingClient
 }
 
-func NewClientPool(opts ClientPoolOptions) *TrackingPool {
+func NewTrackingPool(opts ClientPoolOptions) *TrackingPool {
 	p := &TrackingPool{
 		options: opts,
 	}
@@ -168,7 +168,7 @@ type BroadcastingPool struct {
 	closed  uint32
 }
 
-func NewBroadcastClientPool(opts ClientPoolOptions) *BroadcastingPool {
+func NewBroadcastingPool(opts ClientPoolOptions) *BroadcastingPool {
 	p := &BroadcastingPool{
 		rpool: &redis.Pool{
 			Dial: func() (redis.Conn, error) {
