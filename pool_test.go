@@ -6,7 +6,7 @@ import (
 )
 
 func TestClientPool(t *testing.T) {
-	pool := NewTrackingPool(ClientPoolOptions{RedisAddress: ":6379", Wait: true, MaxActive: 1, MaxEntries: 100})
+	pool := NewTrackingPool(PoolOptions{RedisAddress: ":6379", Wait: true, MaxActive: 1, MaxEntries: 100})
 	c1, err := pool.Get()
 	if err != nil {
 		t.FailNow()
@@ -38,8 +38,7 @@ func TestClientPool(t *testing.T) {
 }
 
 func TestBroadcastPool(t *testing.T) {
-	pool := NewBroadcastingPool(ClientPoolOptions{MaxEntries: 1000, RedisAddress: ":6379"})
-	pool.Start()
+	pool := NewDefaultBroadcastingPool(PoolOptions{MaxEntries: 1000, RedisAddress: ":6379"})
 
 	time.Sleep(time.Millisecond * 100)
 

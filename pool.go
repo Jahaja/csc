@@ -12,7 +12,7 @@ import (
 
 var ErrTooManyActiveClients = errors.New("too many active clients")
 
-type ClientPoolOptions struct {
+type PoolOptions struct {
 	RedisAddress  string
 	RedisDatabase int
 	MaxActive     int
@@ -23,7 +23,7 @@ type ClientPoolOptions struct {
 }
 
 type TrackingPool struct {
-	options ClientPoolOptions
+	options PoolOptions
 	// number of active clients, used or in the free list
 	active uint32
 	// number of times a Get had to wait to receive a connection
@@ -35,7 +35,7 @@ type TrackingPool struct {
 	free []*TrackingClient
 }
 
-func NewTrackingPool(opts ClientPoolOptions) *TrackingPool {
+func NewTrackingPool(opts PoolOptions) *TrackingPool {
 	p := &TrackingPool{
 		options: opts,
 	}
@@ -161,16 +161,72 @@ func (p *TrackingPool) putFree(c *TrackingClient) {
 }
 
 type BroadcastingPool struct {
-	options ClientPoolOptions
-	rpool   *redis.Pool
-	iconn   redis.Conn
-	cache   *cache
-	closed  uint32
+	rpool  *redis.Pool
+	iconn  redis.Conn
+	conn   redis.Conn
+	cache  *cache
+	closed uint32
 }
 
-func NewBroadcastingPool(opts ClientPoolOptions) *BroadcastingPool {
+// creates a new broadcasting pool and starts the background jobs
+func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool, error) {
 	p := &BroadcastingPool{
-		rpool: &redis.Pool{
+		rpool: rpool,
+		cache: newCache(opts.MaxEntries),
+		iconn: rpool.Get(),
+		conn:  rpool.Get(),
+	}
+
+	cid, err := redis.Int(p.iconn.Do("CLIENT", "ID"))
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := p.conn.Do("CLIENT", "TRACKING", "ON", "REDIRECT", cid, "BCAST"); err != nil {
+		return nil, err
+	}
+
+	// ping the redirecting data conn periodically as a healthcheck
+	go func(conn redis.Conn) {
+		ticker := time.NewTicker(time.Second * 5)
+		fails := 0
+		for !p.isClosed() {
+			if fails >= 5 {
+				p.setClosed()
+				Logger.Println("broadcasting data connection failed, closing")
+				return
+			}
+
+			select {
+			case <-ticker.C:
+				_, err := conn.Do("PING")
+				if err != nil {
+					fails++
+					if debugMode {
+						debugLogger.Printf("bpool.conn.pingfail: err=%s\n", err.Error())
+					}
+					continue
+				}
+
+				fails = 0
+			}
+
+		}
+	}(p.conn)
+
+	go func() {
+		if err := invalidationsReceiver(p.iconn, p.cache); err != nil {
+			p.setClosed()
+		}
+	}()
+	go expireWatcher(context.Background(), p.cache)
+
+	return p, nil
+}
+
+func NewDefaultBroadcastingPool(opts PoolOptions) (*BroadcastingPool, error) {
+	return NewBroadcastingPool(
+		&redis.Pool{
 			Dial: func() (redis.Conn, error) {
 				return redis.Dial("tcp", opts.RedisAddress, redis.DialDatabase(opts.RedisDatabase))
 			},
@@ -182,17 +238,9 @@ func NewBroadcastingPool(opts ClientPoolOptions) *BroadcastingPool {
 				_, err := c.Do("PING")
 				return err
 			},
-			MaxIdle:     opts.MaxIdle,
-			MaxActive:   opts.MaxActive,
-			IdleTimeout: opts.IdleTimeout,
-			Wait:        opts.Wait,
 		},
-		cache:   newCache(opts.MaxEntries),
-		options: opts,
-	}
-
-	p.iconn = p.rpool.Get()
-	return p
+		opts,
+	)
 }
 
 func (p *BroadcastingPool) Get() (*BroadcastingClient, error) {
@@ -204,15 +252,6 @@ func (p *BroadcastingPool) Get() (*BroadcastingClient, error) {
 	}
 
 	return c, nil
-}
-
-func (p *BroadcastingPool) Start() {
-	go func() {
-		if err := invalidationsReceiver(p.iconn, p.cache); err != nil {
-			p.setClosed()
-		}
-	}()
-	go expireWatcher(context.Background(), p.cache)
 }
 
 // closes connections of all clients in the free list

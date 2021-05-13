@@ -1,4 +1,4 @@
-module csc
+module github.com/Jahaja/csc
 
 go 1.16
 
