@@ -117,20 +117,20 @@ func (c *client) Set(key string, value []byte, expires int) error {
 	return err
 }
 
-func (c *client) Delete(key string) error {
+func (c *client) Delete(keys ...string) error {
 	if debugMode {
-		debugLogger.Printf("client.delete: %p k=%s\n", c, key)
+		debugLogger.Printf("client.delete: %p k=%s\n", c, keys)
 	}
 
 	if c.isClosed() {
 		return ErrClosed
 	}
 
-	if _, err := c.conn.Do("DEL", key); err != nil {
+	if _, err := c.conn.Do("DEL", redis.Args{}.AddFlat(keys)...); err != nil {
 		return err
 	}
 
-	c.cache.delete(key)
+	c.cache.delete(keys...)
 	return nil
 }
 
