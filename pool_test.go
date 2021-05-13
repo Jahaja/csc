@@ -38,12 +38,14 @@ func TestClientPool(t *testing.T) {
 }
 
 func TestBroadcastPool(t *testing.T) {
-	pool := NewDefaultBroadcastingPool(PoolOptions{MaxEntries: 1000, RedisAddress: ":6379"})
+	pool, err := NewDefaultBroadcastingPool(PoolOptions{MaxEntries: 1000, RedisAddress: ":6379"})
+	if err != nil {
+		t.FailNow()
+	}
 
 	time.Sleep(time.Millisecond * 100)
 
-	_, err := pool.Get()
-	if err != nil {
+	if _, err := pool.Get(); err != nil {
 		t.FailNow()
 	}
 }

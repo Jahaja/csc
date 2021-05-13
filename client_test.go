@@ -89,8 +89,7 @@ func TestBroadcastingClient(t *testing.T) {
 	key := "foo"
 	value := "123456"
 
-	pool := NewDefaultBroadcastingPool(PoolOptions{MaxEntries: 100, RedisAddress: ":6379"})
-	pool.Start()
+	pool, _ := NewDefaultBroadcastingPool(PoolOptions{MaxEntries: 100, RedisAddress: ":6379"})
 
 	time.Sleep(time.Millisecond * 100)
 
