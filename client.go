@@ -24,14 +24,6 @@ var ErrClosed = errors.New("client is closed")
 // this is used so it can be overridden in testing
 var nowFunc = time.Now
 
-type ClientStats struct {
-	Hits       uint64 `json:"hits"`
-	Misses     uint64 `json:"misses"`
-	Evictions  uint64 `json:"evictions"`
-	Expired    uint64 `json:"expired"`
-	NumEntries int    `json:"num_entries"`
-}
-
 type client struct {
 	conn   redis.Conn
 	cache  *cache
@@ -142,18 +134,8 @@ func (c *client) Delete(key string) error {
 	return nil
 }
 
-func (c *client) Stats() ClientStats {
-	c.cache.Lock()
-	num := len(c.cache.entries)
-	c.cache.Unlock()
-
-	return ClientStats{
-		Hits:       atomic.LoadUint64(&c.cache.hits),
-		Misses:     atomic.LoadUint64(&c.cache.misses),
-		Expired:    atomic.LoadUint64(&c.cache.expired),
-		Evictions:  atomic.LoadUint64(&c.cache.evictions),
-		NumEntries: num,
-	}
+func (c *client) Stats() Stats {
+	return c.cache.stats()
 }
 
 func (c *client) setClosed() {

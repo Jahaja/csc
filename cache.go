@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+type Stats struct {
+	Hits       uint64 `json:"hits"`
+	Misses     uint64 `json:"misses"`
+	Evictions  uint64 `json:"evictions"`
+	Expired    uint64 `json:"expired"`
+	NumEntries int    `json:"num_entries"`
+}
+
 type cacheEntry struct {
 	data    []byte
 	expires time.Time
@@ -169,5 +177,19 @@ func (c *cache) evictExpired() {
 
 		atomic.AddUint64(&c.expired, uint64(len(keys)))
 		c.delete(keys...)
+	}
+}
+
+func (c *cache) stats() Stats {
+	c.Lock()
+	num := len(c.entries)
+	c.Unlock()
+
+	return Stats{
+		Hits:       atomic.LoadUint64(&c.hits),
+		Misses:     atomic.LoadUint64(&c.misses),
+		Expired:    atomic.LoadUint64(&c.expired),
+		Evictions:  atomic.LoadUint64(&c.evictions),
+		NumEntries: num,
 	}
 }

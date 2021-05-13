@@ -174,6 +174,14 @@ func NewBroadcastingPool(opts ClientPoolOptions) *BroadcastingPool {
 			Dial: func() (redis.Conn, error) {
 				return redis.Dial("tcp", opts.RedisAddress, redis.DialDatabase(opts.RedisDatabase))
 			},
+			TestOnBorrow: func(c redis.Conn, t time.Time) error {
+				if time.Since(t) < time.Second {
+					return nil
+				}
+
+				_, err := c.Do("PING")
+				return err
+			},
 			MaxIdle:     opts.MaxIdle,
 			MaxActive:   opts.MaxActive,
 			IdleTimeout: opts.IdleTimeout,
@@ -219,4 +227,8 @@ func (p *BroadcastingPool) isClosed() bool {
 
 func (p *BroadcastingPool) setClosed() {
 	atomic.StoreUint32(&p.closed, 1)
+}
+
+func (p *BroadcastingPool) Stats() Stats {
+	return p.cache.stats()
 }
