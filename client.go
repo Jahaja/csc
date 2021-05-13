@@ -151,6 +151,10 @@ func (c *client) Close() error {
 	return nil
 }
 
+func (c *client) Conn() redis.Conn {
+	return c.conn
+}
+
 func (c *TrackingClient) Close() error {
 	// if the client is closed/done, close the connections, otherwise put it back into the pool
 	if c.isClosed() {
