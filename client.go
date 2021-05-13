@@ -24,25 +24,15 @@ var ErrClosed = errors.New("client is closed")
 // this is used so it can be overridden in testing
 var nowFunc = time.Now
 
-type client struct {
+type Client struct {
 	conn   redis.Conn
 	cache  *cache
 	closed uint32
+	pool   *TrackingPool
+	iconn  redis.Conn
 }
 
-type TrackingClient struct {
-	client
-
-	pool *TrackingPool
-	// invalidation connection
-	iconn redis.Conn
-}
-
-type BroadcastingClient struct {
-	client
-}
-
-func (c *client) Get(key string) ([]byte, error) {
+func (c *Client) Get(key string) ([]byte, error) {
 	if debugMode {
 		debugLogger.Printf("client.get: %p k=%s\n", c, key)
 	}
@@ -84,7 +74,7 @@ func (c *client) Get(key string) ([]byte, error) {
 }
 
 // todo(jhamren): if perf needs it, implement this properly with MGET
-func (c *client) GetMulti(keys []string) ([][]byte, error) {
+func (c *Client) GetMulti(keys []string) ([][]byte, error) {
 	var results [][]byte
 
 	for _, k := range keys {
@@ -99,7 +89,7 @@ func (c *client) GetMulti(keys []string) ([][]byte, error) {
 	return results, nil
 }
 
-func (c *client) Set(key string, value []byte, expires int) error {
+func (c *Client) Set(key string, value []byte, expires int) error {
 	if debugMode {
 		debugLogger.Printf("client.set: %p k=%s v=%s\n", c, key, value)
 	}
@@ -117,7 +107,7 @@ func (c *client) Set(key string, value []byte, expires int) error {
 	return err
 }
 
-func (c *client) Delete(keys ...string) error {
+func (c *Client) Delete(keys ...string) error {
 	if debugMode {
 		debugLogger.Printf("client.delete: %p k=%s\n", c, keys)
 	}
@@ -134,28 +124,31 @@ func (c *client) Delete(keys ...string) error {
 	return nil
 }
 
-func (c *client) Stats() Stats {
+func (c *Client) Flush() {
+	tmp := c.cache
+	tmp.Lock()
+	defer tmp.Unlock()
+
+	c.cache = newCache(tmp.maxEntries)
+}
+
+func (c *Client) Stats() Stats {
 	return c.cache.stats()
 }
 
-func (c *client) setClosed() {
+func (c *Client) setClosed() {
 	atomic.StoreUint32(&c.closed, 1)
 }
 
-func (c *client) isClosed() bool {
+func (c *Client) isClosed() bool {
 	return atomic.LoadUint32(&c.closed) == 1
 }
 
-func (c *client) Close() error {
-	c.setClosed()
-	return nil
-}
-
-func (c *client) Conn() redis.Conn {
+func (c *Client) Conn() redis.Conn {
 	return c.conn
 }
 
-func (c *TrackingClient) Close() error {
+func (c *Client) Close() error {
 	// if the client is closed/done, close the connections, otherwise put it back into the pool
 	if c.isClosed() {
 		if err := c.conn.Close(); err != nil {
@@ -169,11 +162,17 @@ func (c *TrackingClient) Close() error {
 		return nil
 	}
 
-	c.pool.putFree(c)
+	if c.pool != nil {
+		// in tracking mode we return the client to the tracking pool
+		c.pool.putFree(c)
+	} else {
+		// in broadcasting mode we return the connection to the redigo pool by closing it
+		c.conn.Close()
+	}
+
 	return nil
 }
 
-func (c *BroadcastingClient) Close() error {
-	c.client.Close()
-	return c.conn.Close()
+func (c *Client) getCache() *cache {
+	return c.cache
 }

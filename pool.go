@@ -32,7 +32,7 @@ type TrackingPool struct {
 	ch chan struct{}
 	mu sync.Mutex
 	// available clients to reuse
-	free []*TrackingClient
+	free []*Client
 }
 
 func NewTrackingPool(opts PoolOptions) *TrackingPool {
@@ -51,7 +51,7 @@ func NewTrackingPool(opts PoolOptions) *TrackingPool {
 	return p
 }
 
-func (p *TrackingPool) Get() (*TrackingClient, error) {
+func (p *TrackingPool) Get() (*Client, error) {
 	// grab a slot, there're MaxActive slots available when waiting
 	if p.options.Wait && p.options.MaxActive > 0 {
 		// assume that we're waiting if there's no slot
@@ -91,12 +91,10 @@ func (p *TrackingPool) Get() (*TrackingClient, error) {
 		return nil, err
 	}
 
-	c = &TrackingClient{
-		pool: p,
-		client: client{
-			conn:  dconn,
-			cache: newCache(p.options.MaxEntries),
-		},
+	c = &Client{
+		pool:  p,
+		conn:  dconn,
+		cache: newCache(p.options.MaxEntries),
 		iconn: iconn,
 	}
 
@@ -110,12 +108,11 @@ func (p *TrackingPool) Get() (*TrackingClient, error) {
 	}
 
 	go func() {
-		if err := invalidationsReceiver(c.iconn, c.cache); err != nil {
+		if err := invalidationsReceiver(c.iconn, c); err != nil {
 			c.setClosed()
 		}
 	}()
-
-	go expireWatcher(context.Background(), c.cache)
+	go expireWatcher(context.Background(), c)
 
 	atomic.AddUint32(&p.active, 1)
 	return c, nil
@@ -135,7 +132,7 @@ func (p *TrackingPool) Close() error {
 }
 
 // getFree returns nil if there is no free client
-func (p *TrackingPool) getFree() *TrackingClient {
+func (p *TrackingPool) getFree() *Client {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	numFree := len(p.free)
@@ -149,7 +146,7 @@ func (p *TrackingPool) getFree() *TrackingClient {
 	return nil
 }
 
-func (p *TrackingPool) putFree(c *TrackingClient) {
+func (p *TrackingPool) putFree(c *Client) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.free = append(p.free, c)
@@ -215,11 +212,11 @@ func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool
 	}(p.conn)
 
 	go func() {
-		if err := invalidationsReceiver(p.iconn, p.cache); err != nil {
+		if err := invalidationsReceiver(p.iconn, p); err != nil {
 			p.setClosed()
 		}
 	}()
-	go expireWatcher(context.Background(), p.cache)
+	go expireWatcher(context.Background(), p)
 
 	return p, nil
 }
@@ -243,12 +240,10 @@ func NewDefaultBroadcastingPool(opts PoolOptions) (*BroadcastingPool, error) {
 	)
 }
 
-func (p *BroadcastingPool) Get() (*BroadcastingClient, error) {
-	c := &BroadcastingClient{
-		client: client{
-			conn:  p.rpool.Get(),
-			cache: p.cache,
-		},
+func (p *BroadcastingPool) Get() (*Client, error) {
+	c := &Client{
+		conn:  p.rpool.Get(),
+		cache: p.cache,
 	}
 
 	return c, nil
@@ -270,4 +265,8 @@ func (p *BroadcastingPool) setClosed() {
 
 func (p *BroadcastingPool) Stats() Stats {
 	return p.cache.stats()
+}
+
+func (p *BroadcastingPool) getCache() *cache {
+	return p.cache
 }
