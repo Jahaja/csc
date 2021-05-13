@@ -174,6 +174,7 @@ func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool
 		conn:  rpool.Get(),
 	}
 
+	// todo(jhamren): reconnect on connection lost
 	cid, err := redis.Int(p.iconn.Do("CLIENT", "ID"))
 	if err != nil {
 		return nil, err
