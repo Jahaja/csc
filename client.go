@@ -41,27 +41,32 @@ func (c *Client) Get(key string) ([]byte, error) {
 		return nil, ErrClosed
 	}
 
-	if data := c.cache.get(key); data != nil {
+	if data := c.cache.get(key); data != nil && string(data) != cacheInProgressSentinel {
 		return data, nil
+	}
+
+	cleanup := func() {
+		c.cache.delete(key)
+		c.conn.Do("DEL", key)
 	}
 
 	c.cache.set(key, []byte(cacheInProgressSentinel), 30)
 
 	rpl, err := c.conn.Do("GET", key)
 	if err != nil {
-		c.cache.delete(key)
+		cleanup()
 		return nil, err
 	}
 
 	data, err := redis.Bytes(rpl, err)
 	if err != nil {
-		c.cache.delete(key)
+		cleanup()
 		return nil, err
 	}
 
 	expire, err := redis.Int(c.conn.Do("TTL", key))
 	if err != nil {
-		c.cache.delete(key)
+		cleanup()
 		return nil, err
 	}
 
