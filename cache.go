@@ -123,17 +123,21 @@ func (c *cache) set(key string, value []byte, expires int) {
 }
 
 func (c *cache) get(key string) []byte {
-	if debugMode {
-		debugLogger.Printf("cache.get: %p k=%s\n", c, key)
-	}
-
 	c.Lock()
 	ce, ok := c.entries[key]
 	c.Unlock()
 
 	if ok {
+		if debugMode {
+			debugLogger.Printf("cache.get.hit: %p k=%s\n", c, key)
+		}
+
 		atomic.AddUint64(&c.hits, 1)
 		return ce.data
+	}
+
+	if debugMode {
+		debugLogger.Printf("cache.get.miss: %p k=%s\n", c, key)
 	}
 
 	atomic.AddUint64(&c.misses, 1)
@@ -141,17 +145,25 @@ func (c *cache) get(key string) []byte {
 }
 
 func (c *cache) getm(keys ...string) [][]byte {
-	if debugMode {
-		debugLogger.Printf("cache.getm: %p k=%s\n", c, keys)
-	}
-
 	var results [][]byte
 
 	c.Lock()
 	defer c.Unlock()
 
 	for _, k := range keys {
-		e, _ := c.entries[k]
+		e, ok := c.entries[k]
+		if ok {
+			atomic.AddUint64(&c.hits, 1)
+			if debugMode {
+				debugLogger.Printf("cache.getm.hit: %p k=%s\n", c, keys)
+			}
+		} else {
+			atomic.AddUint64(&c.misses, 1)
+			if debugMode {
+				debugLogger.Printf("cache.getm.miss: %p k=%s\n", c, keys)
+			}
+		}
+
 		results = append(results, e.data)
 	}
 
