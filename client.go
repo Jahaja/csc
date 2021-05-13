@@ -78,11 +78,7 @@ func (c *Client) GetMulti(keys []string) ([][]byte, error) {
 	var results [][]byte
 
 	for _, k := range keys {
-		d, err := c.Get(k)
-		if err != nil {
-			return nil, err
-		}
-
+		d, _ := c.Get(k)
 		results = append(results, d)
 	}
 
