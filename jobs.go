@@ -7,11 +7,7 @@ import (
 	"github.com/gomodule/redigo/redis"
 )
 
-type cacher interface {
-	getCache() *cache
-}
-
-func invalidationsReceiver(conn redis.Conn, c cacher) error {
+func invalidationsReceiver(conn redis.Conn, c *cache) error {
 	if _, err := conn.Do("SUBSCRIBE", "__redis__:invalidate"); err != nil {
 		return err
 	}
@@ -56,11 +52,11 @@ func invalidationsReceiver(conn redis.Conn, c cacher) error {
 			debugLogger.Printf("client.invalidating: %p k=%s\n", c, keys)
 		}
 
-		c.getCache().delete(keys...)
+		c.delete(keys...)
 	}
 }
 
-func expireWatcher(ctx context.Context, c cacher) {
+func expireWatcher(ctx context.Context, c *cache) {
 	ticker := time.NewTicker(time.Millisecond * defaultExpireCheckInterval)
 	defer ticker.Stop()
 
@@ -69,7 +65,7 @@ func expireWatcher(ctx context.Context, c cacher) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			c.getCache().evictExpired()
+			c.evictExpired()
 		}
 	}
 }

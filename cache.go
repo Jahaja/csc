@@ -193,3 +193,14 @@ func (c *cache) stats() Stats {
 		NumEntries: num,
 	}
 }
+
+func (c *cache) flush() {
+	c.Lock()
+	defer c.Unlock()
+
+	c.hits = 0
+	c.misses = 0
+	c.expired = 0
+	c.evictions = 0
+	c.entries = map[string]cacheEntry{}
+}

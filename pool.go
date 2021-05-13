@@ -108,11 +108,11 @@ func (p *TrackingPool) Get() (*Client, error) {
 	}
 
 	go func() {
-		if err := invalidationsReceiver(c.iconn, c); err != nil {
+		if err := invalidationsReceiver(c.iconn, c.cache); err != nil {
 			c.setClosed()
 		}
 	}()
-	go expireWatcher(context.Background(), c)
+	go expireWatcher(context.Background(), c.cache)
 
 	atomic.AddUint32(&p.active, 1)
 	return c, nil
@@ -212,11 +212,11 @@ func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool
 	}(p.conn)
 
 	go func() {
-		if err := invalidationsReceiver(p.iconn, p); err != nil {
+		if err := invalidationsReceiver(p.iconn, p.cache); err != nil {
 			p.setClosed()
 		}
 	}()
-	go expireWatcher(context.Background(), p)
+	go expireWatcher(context.Background(), p.cache)
 
 	return p, nil
 }
@@ -267,6 +267,6 @@ func (p *BroadcastingPool) Stats() Stats {
 	return p.cache.stats()
 }
 
-func (p *BroadcastingPool) getCache() *cache {
-	return p.cache
+func (p *BroadcastingPool) Flush() {
+	p.cache.flush()
 }

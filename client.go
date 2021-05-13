@@ -125,11 +125,7 @@ func (c *Client) Delete(keys ...string) error {
 }
 
 func (c *Client) Flush() {
-	tmp := c.cache
-	tmp.Lock()
-	defer tmp.Unlock()
-
-	c.cache = newCache(tmp.maxEntries)
+	c.cache.flush()
 }
 
 func (c *Client) Stats() Stats {
@@ -171,8 +167,4 @@ func (c *Client) Close() error {
 	}
 
 	return nil
-}
-
-func (c *Client) getCache() *cache {
-	return c.cache
 }
