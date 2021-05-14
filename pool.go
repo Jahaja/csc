@@ -204,12 +204,20 @@ func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool
 }
 
 func (p *BroadcastingPool) setupConnections() error {
+	if debugMode {
+		debugLogger.Printf("bpool.conn.setup: %p\n", p)
+	}
+
 	p.conn = p.rpool.Get()
 	p.iconn = p.rpool.Get()
 
 	cid, err := redis.Int(p.iconn.Do("CLIENT", "ID"))
 	if err != nil {
 		return err
+	}
+
+	if debugMode {
+		debugLogger.Printf("bpool.conn.iconn: %p cid=%d\n", p, cid)
 	}
 
 	if _, err := p.conn.Do("CLIENT", "TRACKING", "ON", "REDIRECT", cid, "BCAST"); err != nil {
@@ -240,7 +248,6 @@ func (p *BroadcastingPool) setupConnections() error {
 
 				fails = 0
 			}
-
 		}
 	}(p.conn)
 

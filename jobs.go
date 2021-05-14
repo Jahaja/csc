@@ -21,7 +21,7 @@ func invalidationsReceiver(conn redis.Conn, c *cache) error {
 		reply, err := conn.Receive()
 		if err != nil {
 			fails++
-			Logger.Println("failed to receive from subscription")
+			Logger.Println("failed to receive from subscription:", err.Error())
 			continue
 		}
 
@@ -31,7 +31,7 @@ func invalidationsReceiver(conn redis.Conn, c *cache) error {
 
 		values, err := redis.Values(reply, err)
 		if err != nil {
-			Logger.Println("failed to parse invalidation reply")
+			Logger.Println("failed to parse invalidation reply:", err.Error())
 			continue
 		}
 
