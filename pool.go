@@ -158,11 +158,12 @@ func (p *TrackingPool) putFree(c *Client) {
 }
 
 type BroadcastingPool struct {
-	rpool  *redis.Pool
-	iconn  redis.Conn
-	conn   redis.Conn
-	cache  *cache
-	closed uint32
+	rpool     *redis.Pool
+	iconn     redis.Conn
+	conn      redis.Conn
+	cache     *cache
+	outOfSync uint32
+	closed    uint32
 }
 
 // creates a new broadcasting pool and starts the background jobs
@@ -170,18 +171,49 @@ func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool
 	p := &BroadcastingPool{
 		rpool: rpool,
 		cache: newCache(opts.MaxEntries),
-		iconn: rpool.Get(),
-		conn:  rpool.Get(),
 	}
 
-	// todo(jhamren): reconnect on connection lost
+	if err := p.setupConnections(); err != nil {
+		return nil, err
+	}
+
+	go expireWatcher(context.Background(), p.cache)
+	go func() {
+		for !p.isClosed() {
+			time.Sleep(time.Second)
+			if p.isOutOfSync() {
+				if debugMode {
+					debugLogger.Printf("bpool.conn.outofsync: %p\n", p)
+				}
+
+				p.conn.Close()
+				p.iconn.Close()
+				p.cache.flush()
+
+				if err := p.setupConnections(); err != nil {
+					Logger.Println("failed to reopen broadcasting pool connections:", err.Error())
+					continue
+				}
+
+				p.setOutofSync(false)
+			}
+		}
+	}()
+
+	return p, nil
+}
+
+func (p *BroadcastingPool) setupConnections() error {
+	p.conn = p.rpool.Get()
+	p.iconn = p.rpool.Get()
+
 	cid, err := redis.Int(p.iconn.Do("CLIENT", "ID"))
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	if _, err := p.conn.Do("CLIENT", "TRACKING", "ON", "REDIRECT", cid, "BCAST"); err != nil {
-		return nil, err
+		return err
 	}
 
 	// ping the redirecting data conn periodically as a healthcheck
@@ -190,8 +222,8 @@ func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool
 		fails := 0
 		for !p.isClosed() {
 			if fails >= 5 {
-				p.setClosed()
-				Logger.Println("broadcasting data connection failed, closing")
+				p.setOutofSync(true)
+				Logger.Println("broadcasting data connection failed, connections out-of-sync")
 				return
 			}
 
@@ -201,7 +233,7 @@ func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool
 				if err != nil {
 					fails++
 					if debugMode {
-						debugLogger.Printf("bpool.conn.pingfail: err=%s\n", err.Error())
+						debugLogger.Printf("bpool.conn.pingfail: %p err=%s\n", p, err.Error())
 					}
 					continue
 				}
@@ -214,12 +246,11 @@ func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool
 
 	go func() {
 		if err := invalidationsReceiver(p.iconn, p.cache); err != nil {
-			p.setClosed()
+			p.setOutofSync(true)
 		}
 	}()
-	go expireWatcher(context.Background(), p.cache)
 
-	return p, nil
+	return nil
 }
 
 func NewDefaultBroadcastingPool(opts PoolOptions) (*BroadcastingPool, error) {
@@ -250,18 +281,28 @@ func (p *BroadcastingPool) Get() (*Client, error) {
 	return c, nil
 }
 
-// closes connections of all clients in the free list
 func (p *BroadcastingPool) Close() error {
-	p.setClosed()
+	atomic.StoreUint32(&p.closed, 1)
+	p.conn.Close()
+	p.iconn.Close()
+	p.cache.flush()
 	return p.rpool.Close()
+}
+
+func (p *BroadcastingPool) isOutOfSync() bool {
+	return atomic.LoadUint32(&p.outOfSync) == 1
 }
 
 func (p *BroadcastingPool) isClosed() bool {
 	return atomic.LoadUint32(&p.closed) == 1
 }
 
-func (p *BroadcastingPool) setClosed() {
-	atomic.StoreUint32(&p.closed, 1)
+func (p *BroadcastingPool) setOutofSync(b bool) {
+	if b {
+		atomic.StoreUint32(&p.outOfSync, 1)
+	} else {
+		atomic.StoreUint32(&p.outOfSync, 0)
+	}
 }
 
 func (p *BroadcastingPool) Stats() Stats {

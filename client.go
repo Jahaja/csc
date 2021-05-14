@@ -103,9 +103,7 @@ func (c *Client) Set(key string, value []byte, expires int) error {
 		return err
 	}
 
-	// set in cache using a Get call which turns on tracking for the key
-	_, err := c.Get(key)
-	return err
+	return nil
 }
 
 func (c *Client) Delete(keys ...string) error {
