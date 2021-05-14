@@ -39,10 +39,16 @@ func newCache(maxEntries int) *cache {
 		panic("max entries must not be 0")
 	}
 
-	return &cache{
+	c := &cache{
 		maxEntries: maxEntries,
 		entries:    make(map[string]cacheEntry, initialCacheSize),
 	}
+
+	if debugMode {
+		debugLogger.Printf("cache.new: %p n=%d\n", c, maxEntries)
+	}
+
+	return c
 }
 
 func (c *cache) delete(keys ...string) {
@@ -184,7 +190,7 @@ func (c *cache) evictExpired() {
 
 	if len(keys) > 0 {
 		if debugMode {
-			debugLogger.Printf("client.expire: %p k=%s\n", c, keys)
+			debugLogger.Printf("cache.expire: %p k=%s\n", c, keys)
 		}
 
 		atomic.AddUint64(&c.expired, uint64(len(keys)))
@@ -209,6 +215,10 @@ func (c *cache) stats() Stats {
 func (c *cache) flush() {
 	c.Lock()
 	defer c.Unlock()
+
+	if debugMode {
+		debugLogger.Printf("cache.flush: %p\n", c)
+	}
 
 	c.hits = 0
 	c.misses = 0

@@ -123,6 +123,10 @@ func (p *TrackingPool) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if debugMode {
+		debugLogger.Printf("tpool.close: %p\n", p)
+	}
+
 	for _, c := range p.free {
 		c.setClosed()
 		c.Close()
@@ -135,7 +139,12 @@ func (p *TrackingPool) Close() error {
 func (p *TrackingPool) getFree() *Client {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	numFree := len(p.free)
+	if debugMode {
+		debugLogger.Printf("tpool.getfree: %p n=%d\n", p, numFree)
+	}
+
 	if numFree > 0 {
 		c := p.free[0]
 		copy(p.free, p.free[1:])
@@ -149,6 +158,11 @@ func (p *TrackingPool) getFree() *Client {
 func (p *TrackingPool) putFree(c *Client) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if debugMode {
+		debugLogger.Printf("tpool.putfree: %p n=%d\n", p, len(p.free))
+	}
+
 	p.free = append(p.free, c)
 
 	// notify that a slot has become available
@@ -253,6 +267,7 @@ func (p *BroadcastingPool) setupConnections() error {
 
 	go func() {
 		if err := invalidationsReceiver(p.iconn, p.cache); err != nil {
+			Logger.Println("invalidation data connection failed, connections out-of-sync")
 			p.setOutofSync(true)
 		}
 	}()
@@ -289,6 +304,10 @@ func (p *BroadcastingPool) Get() (*Client, error) {
 }
 
 func (p *BroadcastingPool) Close() error {
+	if debugMode {
+		debugLogger.Printf("bpool.close: %p\n", p)
+	}
+
 	atomic.StoreUint32(&p.closed, 1)
 	p.conn.Close()
 	p.iconn.Close()
