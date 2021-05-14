@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const NoExpire = 0
+
 type Stats struct {
 	Hits       uint64 `json:"hits"`
 	Misses     uint64 `json:"misses"`
@@ -122,10 +124,15 @@ func (c *cache) set(key string, value []byte, expires int) {
 		c.evictKeys()
 	}
 
-	c.entries[key] = cacheEntry{
-		data:    value,
-		expires: nowFunc().Add(time.Second * time.Duration(expires)),
+	ce := cacheEntry{
+		data: value,
 	}
+
+	if expires > NoExpire {
+		ce.expires = nowFunc().Add(time.Second * time.Duration(expires))
+	}
+
+	c.entries[key] = ce
 }
 
 func (c *cache) get(key string) []byte {
@@ -182,7 +189,7 @@ func (c *cache) evictExpired() {
 	now := nowFunc()
 	c.Lock()
 	for k, entry := range c.entries {
-		if entry.expires.Before(now) {
+		if !entry.expires.IsZero() && entry.expires.Before(now) {
 			keys = append(keys, k)
 		}
 	}

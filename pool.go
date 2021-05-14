@@ -195,6 +195,7 @@ func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool
 	go func() {
 		for !p.isClosed() {
 			time.Sleep(time.Second)
+
 			if p.isOutOfSync() {
 				if debugMode {
 					debugLogger.Printf("bpool.conn.outofsync: %p\n", p)
