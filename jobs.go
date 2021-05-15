@@ -48,10 +48,7 @@ func invalidationsReceiver(conn redis.Conn, c *cache) error {
 			continue
 		}
 
-		if debugMode {
-			debugLogger.Printf("client.invalidating: %p k=%s\n", c, keys)
-		}
-
+		dlog("client.invalidating: %p k=%s\n", c, keys)
 		c.delete(keys...)
 	}
 }

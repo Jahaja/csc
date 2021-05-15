@@ -12,6 +12,14 @@ import (
 
 var ErrTooManyActiveClients = errors.New("too many active clients")
 
+type Pool interface {
+	Get() (*Client, error)
+	Close() error
+	Options() *PoolOptions
+
+	put(*Client)
+}
+
 type PoolOptions struct {
 	RedisAddress  string
 	RedisDatabase int
@@ -19,7 +27,9 @@ type PoolOptions struct {
 	MaxIdle       int
 	IdleTimeout   time.Duration
 	Wait          bool
-	MaxEntries    int
+	// key prefix to add to keys. in broadcasting mode this is used to invalidate only keys with this prefix
+	KeyPrefix  string
+	MaxEntries int
 }
 
 type TrackingPool struct {
@@ -61,7 +71,7 @@ func (p *TrackingPool) Get() (*Client, error) {
 			atomic.AddUint64(&p.waited, 1)
 			if debugMode {
 				start = nowFunc()
-				debugLogger.Printf("tpool.waiting: %p", p)
+				dlog("tpool.waiting: %p", p)
 			}
 		}
 
@@ -70,7 +80,7 @@ func (p *TrackingPool) Get() (*Client, error) {
 		}
 
 		if debugMode && waiting {
-			debugLogger.Printf("tclient.waited: %p, t=%dus", p, time.Since(start).Microseconds())
+			dlog("tclient.waited: %p, t=%dus", p, time.Since(start).Microseconds())
 		}
 	} else if p.options.MaxActive > 0 && int(atomic.LoadUint32(&p.active)) >= p.options.MaxActive {
 		return nil, ErrTooManyActiveClients
@@ -123,10 +133,7 @@ func (p *TrackingPool) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if debugMode {
-		debugLogger.Printf("tpool.close: %p\n", p)
-	}
-
+	dlog("tpool.close: %p\n", p)
 	for _, c := range p.free {
 		c.setClosed()
 		c.Close()
@@ -141,9 +148,7 @@ func (p *TrackingPool) getFree() *Client {
 	defer p.mu.Unlock()
 
 	numFree := len(p.free)
-	if debugMode {
-		debugLogger.Printf("tpool.getfree: %p n=%d\n", p, numFree)
-	}
+	dlog("tpool.getfree: %p n=%d\n", p, numFree)
 
 	if numFree > 0 {
 		c := p.free[0]
@@ -155,14 +160,11 @@ func (p *TrackingPool) getFree() *Client {
 	return nil
 }
 
-func (p *TrackingPool) putFree(c *Client) {
+func (p *TrackingPool) put(c *Client) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if debugMode {
-		debugLogger.Printf("tpool.putfree: %p n=%d\n", p, len(p.free))
-	}
-
+	dlog("tpool.put: %p n=%d\n", p, len(p.free))
 	p.free = append(p.free, c)
 
 	// notify that a slot has become available
@@ -171,7 +173,12 @@ func (p *TrackingPool) putFree(c *Client) {
 	}
 }
 
+func (p *TrackingPool) Options() *PoolOptions {
+	return &p.options
+}
+
 type BroadcastingPool struct {
+	options   PoolOptions
 	rpool     *redis.Pool
 	iconn     redis.Conn
 	conn      redis.Conn
@@ -183,8 +190,9 @@ type BroadcastingPool struct {
 // creates a new broadcasting pool and starts the background jobs
 func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool, error) {
 	p := &BroadcastingPool{
-		rpool: rpool,
-		cache: newCache(opts.MaxEntries),
+		options: opts,
+		rpool:   rpool,
+		cache:   newCache(opts.MaxEntries),
 	}
 
 	if err := p.setupConnections(); err != nil {
@@ -197,9 +205,7 @@ func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool
 			time.Sleep(time.Second)
 
 			if p.isOutOfSync() {
-				if debugMode {
-					debugLogger.Printf("bpool.conn.outofsync: %p\n", p)
-				}
+				dlog("bpool.conn.outofsync: %p\n", p)
 
 				p.conn.Close()
 				p.iconn.Close()
@@ -219,9 +225,7 @@ func NewBroadcastingPool(rpool *redis.Pool, opts PoolOptions) (*BroadcastingPool
 }
 
 func (p *BroadcastingPool) setupConnections() error {
-	if debugMode {
-		debugLogger.Printf("bpool.conn.setup: %p\n", p)
-	}
+	dlog("bpool.conn.setup: %p\n", p)
 
 	p.conn = p.rpool.Get()
 	p.iconn = p.rpool.Get()
@@ -231,11 +235,15 @@ func (p *BroadcastingPool) setupConnections() error {
 		return err
 	}
 
-	if debugMode {
-		debugLogger.Printf("bpool.conn.iconn: %p cid=%d\n", p, cid)
+	dlog("bpool.conn.iconn: %p cid=%d p=%s\n", p, cid, p.options.KeyPrefix)
+
+	args := redis.Args{}
+	args = append(args, "TRACKING", "ON", "REDIRECT", cid, "BCAST")
+	if p.options.KeyPrefix != "" {
+		args = append(args, "PREFIX", p.options.KeyPrefix)
 	}
 
-	if _, err := p.conn.Do("CLIENT", "TRACKING", "ON", "REDIRECT", cid, "BCAST"); err != nil {
+	if _, err := p.conn.Do("CLIENT", args...); err != nil {
 		return err
 	}
 
@@ -255,9 +263,7 @@ func (p *BroadcastingPool) setupConnections() error {
 				_, err := conn.Do("PING")
 				if err != nil {
 					fails++
-					if debugMode {
-						debugLogger.Printf("bpool.conn.pingfail: %p err=%s\n", p, err.Error())
-					}
+					dlog("bpool.conn.pingfail: %p err=%s\n", p, err.Error())
 					continue
 				}
 
@@ -297,6 +303,7 @@ func NewDefaultBroadcastingPool(opts PoolOptions) (*BroadcastingPool, error) {
 
 func (p *BroadcastingPool) Get() (*Client, error) {
 	c := &Client{
+		pool:  p,
 		conn:  p.rpool.Get(),
 		cache: p.cache,
 	}
@@ -305,9 +312,7 @@ func (p *BroadcastingPool) Get() (*Client, error) {
 }
 
 func (p *BroadcastingPool) Close() error {
-	if debugMode {
-		debugLogger.Printf("bpool.close: %p\n", p)
-	}
+	dlog("bpool.close: %p\n", p)
 
 	atomic.StoreUint32(&p.closed, 1)
 	p.conn.Close()
@@ -336,6 +341,17 @@ func (p *BroadcastingPool) Stats() Stats {
 	return p.cache.stats()
 }
 
+func (p *BroadcastingPool) put(c *Client) {
+	dlog("bpool.put: %p\n", p)
+
+	// in broadcasting mode we return the connection to the redigo pool by closing it
+	c.conn.Close()
+}
+
 func (p *BroadcastingPool) Flush() {
 	p.cache.flush()
+}
+
+func (p *BroadcastingPool) Options() *PoolOptions {
+	return &p.options
 }

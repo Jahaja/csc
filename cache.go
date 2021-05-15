@@ -46,17 +46,12 @@ func newCache(maxEntries int) *cache {
 		entries:    make(map[string]cacheEntry, initialCacheSize),
 	}
 
-	if debugMode {
-		debugLogger.Printf("cache.new: %p n=%d\n", c, maxEntries)
-	}
-
+	dlog("cache.new: %p n=%d\n", c, maxEntries)
 	return c
 }
 
 func (c *cache) delete(keys ...string) {
-	if debugMode {
-		debugLogger.Printf("cache.delete: %p k=%s\n", c, keys)
-	}
+	dlog("cache.delete: %p k=%s\n", c, keys)
 
 	c.Lock()
 	defer c.Unlock()
@@ -84,9 +79,7 @@ func (c *cache) evictKeys() {
 	rand.Seed(nowFunc().UnixNano())
 	start := rand.Intn(len(c.entries) - size)
 
-	if debugMode {
-		debugLogger.Printf("cache.evict: %p st=%d si=%d l=%ds\n", c, start, size, len(c.entries))
-	}
+	dlog("cache.evict: %p st=%d si=%d l=%ds\n", c, start, size, len(c.entries))
 
 	i := 0
 	for k := range c.entries {
@@ -95,9 +88,7 @@ func (c *cache) evictKeys() {
 			continue
 		}
 
-		if debugMode {
-			debugLogger.Printf("cache.evict: %p k=%s\n", c, k)
-		}
+		dlog("cache.evict: %p k=%s\n", c, k)
 
 		delete(c.entries, k)
 		c.evictions++
@@ -112,9 +103,7 @@ func (c *cache) evictKeys() {
 }
 
 func (c *cache) set(key string, value []byte, expires int) {
-	if debugMode {
-		debugLogger.Printf("cache.set: %p k=%s v=%s ex=%d\n", c, key, value, expires)
-	}
+	dlog("cache.set: %p k=%s v=%s ex=%d\n", c, key, value, expires)
 
 	c.Lock()
 	defer c.Unlock()
@@ -141,17 +130,13 @@ func (c *cache) get(key string) []byte {
 	c.Unlock()
 
 	if ok {
-		if debugMode {
-			debugLogger.Printf("cache.get.hit: %p k=%s\n", c, key)
-		}
+		dlog("cache.get.hit: %p k=%s\n", c, key)
 
 		atomic.AddUint64(&c.hits, 1)
 		return ce.data
 	}
 
-	if debugMode {
-		debugLogger.Printf("cache.get.miss: %p k=%s\n", c, key)
-	}
+	dlog("cache.get.miss: %p k=%s\n", c, key)
 
 	atomic.AddUint64(&c.misses, 1)
 	return nil
@@ -167,14 +152,10 @@ func (c *cache) getm(keys ...string) [][]byte {
 		e, ok := c.entries[k]
 		if ok {
 			atomic.AddUint64(&c.hits, 1)
-			if debugMode {
-				debugLogger.Printf("cache.getm.hit: %p k=%s\n", c, keys)
-			}
+			dlog("cache.getm.hit: %p k=%s\n", c, keys)
 		} else {
 			atomic.AddUint64(&c.misses, 1)
-			if debugMode {
-				debugLogger.Printf("cache.getm.miss: %p k=%s\n", c, keys)
-			}
+			dlog("cache.getm.miss: %p k=%s\n", c, keys)
 		}
 
 		results = append(results, e.data)
@@ -196,9 +177,7 @@ func (c *cache) evictExpired() {
 	c.Unlock()
 
 	if len(keys) > 0 {
-		if debugMode {
-			debugLogger.Printf("cache.expire: %p k=%s\n", c, keys)
-		}
+		dlog("cache.expire: %p k=%s\n", c, keys)
 
 		atomic.AddUint64(&c.expired, uint64(len(keys)))
 		c.delete(keys...)
@@ -223,9 +202,7 @@ func (c *cache) flush() {
 	c.Lock()
 	defer c.Unlock()
 
-	if debugMode {
-		debugLogger.Printf("cache.flush: %p\n", c)
-	}
+	dlog("cache.flush: %p\n", c)
 
 	c.hits = 0
 	c.misses = 0

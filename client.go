@@ -17,6 +17,13 @@ const defaultExpireCheckInterval = 3000
 
 var debugMode = os.Getenv("__CSC_DEBUG") != ""
 var debugLogger = log.New(os.Stdout, "csc-debug ", log.Ldate|log.Lmicroseconds)
+
+func dlog(format string, v ...interface{}) {
+	if debugMode {
+		debugLogger.Printf(format, v...)
+	}
+}
+
 var Logger = log.New(os.Stdout, "csc ", log.Ldate|log.Lmicroseconds)
 
 var ErrClosed = errors.New("client is closed")
@@ -25,21 +32,20 @@ var ErrClosed = errors.New("client is closed")
 var nowFunc = time.Now
 
 type Client struct {
+	pool   Pool
 	conn   redis.Conn
-	cache  *cache
 	closed uint32
-	pool   *TrackingPool
+	cache  *cache
 	iconn  redis.Conn
 }
 
 func (c *Client) Get(key string) ([]byte, error) {
-	if debugMode {
-		debugLogger.Printf("client.get: %p k=%s\n", c, key)
-	}
-
 	if c.isClosed() {
 		return nil, ErrClosed
 	}
+
+	key = c.prefixKey(key)
+	dlog("client.get: %p k=%s\n", c, key)
 
 	if data := c.cache.get(key); data != nil && string(data) != cacheInProgressSentinel {
 		return data, nil
@@ -83,6 +89,7 @@ func (c *Client) GetMulti(keys []string) ([][]byte, error) {
 	var results [][]byte
 
 	for _, k := range keys {
+		k = c.prefixKey(k)
 		d, _ := c.Get(k)
 		results = append(results, d)
 	}
@@ -91,13 +98,12 @@ func (c *Client) GetMulti(keys []string) ([][]byte, error) {
 }
 
 func (c *Client) Set(key string, value []byte, expires int) error {
-	if debugMode {
-		debugLogger.Printf("client.set: %p k=%s v=%s\n", c, key, value)
-	}
-
 	if c.isClosed() {
 		return ErrClosed
 	}
+
+	key = c.prefixKey(key)
+	dlog("client.set: %p k=%s v=%s\n", c, key, value)
 
 	if _, err := c.conn.Do("SETEX", key, expires, value); err != nil {
 		return err
@@ -107,14 +113,20 @@ func (c *Client) Set(key string, value []byte, expires int) error {
 }
 
 func (c *Client) Delete(keys ...string) error {
-	if debugMode {
-		debugLogger.Printf("client.delete: %p k=%s\n", c, keys)
-	}
-
 	if c.isClosed() {
 		return ErrClosed
 	}
 
+	if c.pool.Options().KeyPrefix != "" {
+		var ks = make([]string, 0, len(keys))
+		for _, k := range keys {
+			ks = append(ks, c.prefixKey(k))
+		}
+
+		keys = ks
+	}
+
+	dlog("client.delete: %p k=%s\n", c, keys)
 	if _, err := c.conn.Do("DEL", redis.Args{}.AddFlat(keys)...); err != nil {
 		return err
 	}
@@ -157,13 +169,15 @@ func (c *Client) Close() error {
 		return nil
 	}
 
-	if c.pool != nil {
-		// in tracking mode we return the client to the tracking pool
-		c.pool.putFree(c)
-	} else {
-		// in broadcasting mode we return the connection to the redigo pool by closing it
-		c.conn.Close()
+	c.pool.put(c)
+	return nil
+}
+
+func (c *Client) prefixKey(k string) string {
+	opts := c.pool.Options()
+	if opts.KeyPrefix != "" {
+		return opts.KeyPrefix + k
 	}
 
-	return nil
+	return k
 }
