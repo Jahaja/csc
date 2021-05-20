@@ -114,13 +114,12 @@ func (c *Client) Get(key string) ([]byte, error) {
 }
 
 // todo(jhamren): if perf needs it, implement this properly with MGET
-func (c *Client) GetMulti(keys []string) ([][]byte, error) {
-	var results [][]byte
+func (c *Client) GetEntries(keys []string) ([]Entry, error) {
+	results := make([]Entry, 0, len(keys))
 
 	for _, k := range keys {
-		k = c.prefixKey(k)
-		d, _ := c.Get(k)
-		results = append(results, d)
+		e, _ := c.GetEntry(k)
+		results = append(results, e)
 	}
 
 	return results, nil
