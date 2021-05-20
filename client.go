@@ -39,16 +39,28 @@ type Client struct {
 	iconn  redis.Conn
 }
 
-func (c *Client) Get(key string) ([]byte, error) {
+type Entry struct {
+	data    []byte
+	expires time.Time
+	hit     bool
+}
+
+func (c *Client) getEntry(key string) (Entry, error) {
+	var empty Entry
+
 	if c.isClosed() {
-		return nil, ErrClosed
+		return empty, ErrClosed
 	}
 
 	key = c.prefixKey(key)
 	dlog("client.get: %p k=%s\n", c, key)
 
-	if data := c.cache.get(key); data != nil && string(data) != cacheInProgressSentinel {
-		return data, nil
+	if ce, ok := c.cache.getEntry(key); ok && ce.data != nil && string(ce.data) != cacheInProgressSentinel {
+		return Entry{
+			data:    ce.data,
+			expires: ce.expires,
+			hit:     true,
+		}, nil
 	}
 
 	cleanup := func() {
@@ -61,19 +73,19 @@ func (c *Client) Get(key string) ([]byte, error) {
 	rpl, err := c.conn.Do("GET", key)
 	if err != nil {
 		cleanup()
-		return nil, err
+		return empty, err
 	}
 
 	data, err := redis.Bytes(rpl, err)
 	if err != nil {
 		cleanup()
-		return nil, err
+		return empty, err
 	}
 
 	expire, err := redis.Int(c.conn.Do("TTL", key))
 	if err != nil {
 		cleanup()
-		return nil, err
+		return empty, err
 	}
 
 	// only set to cache if we see the sentinel, if not, the key has been invalidated during processing
@@ -81,7 +93,24 @@ func (c *Client) Get(key string) ([]byte, error) {
 		c.cache.set(key, data, expire)
 	}
 
-	return data, nil
+	return Entry{
+		data:    data,
+		expires: nowFunc().Add(time.Second * time.Duration(expire)),
+		hit:     false,
+	}, nil
+}
+
+func (c *Client) GetEntry(key string) (Entry, error) {
+	return c.getEntry(key)
+}
+
+func (c *Client) Get(key string) ([]byte, error) {
+	e, err := c.getEntry(key)
+	if err != nil {
+		return nil, err
+	}
+
+	return e.data, err
 }
 
 // todo(jhamren): if perf needs it, implement this properly with MGET

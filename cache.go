@@ -124,7 +124,7 @@ func (c *cache) set(key string, value []byte, expires int) {
 	c.entries[key] = ce
 }
 
-func (c *cache) get(key string) []byte {
+func (c *cache) getEntry(key string) (cacheEntry, bool) {
 	c.Lock()
 	ce, ok := c.entries[key]
 	c.Unlock()
@@ -133,13 +133,18 @@ func (c *cache) get(key string) []byte {
 		dlog("cache.get.hit: %p k=%s\n", c, key)
 
 		atomic.AddUint64(&c.hits, 1)
-		return ce.data
+		return ce, ok
 	}
 
 	dlog("cache.get.miss: %p k=%s\n", c, key)
-
 	atomic.AddUint64(&c.misses, 1)
-	return nil
+
+	return cacheEntry{}, ok
+}
+
+func (c *cache) get(key string) []byte {
+	ce, _ := c.getEntry(key)
+	return ce.data
 }
 
 func (c *cache) getm(keys ...string) [][]byte {
