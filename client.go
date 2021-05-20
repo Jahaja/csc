@@ -40,9 +40,9 @@ type Client struct {
 }
 
 type Entry struct {
-	data    []byte
-	expires time.Time
-	hit     bool
+	Data    []byte
+	Expires time.Time
+	Hit     bool
 }
 
 func (c *Client) getEntry(key string) (Entry, error) {
@@ -57,9 +57,9 @@ func (c *Client) getEntry(key string) (Entry, error) {
 
 	if ce, ok := c.cache.getEntry(key); ok && ce.data != nil && string(ce.data) != cacheInProgressSentinel {
 		return Entry{
-			data:    ce.data,
-			expires: ce.expires,
-			hit:     true,
+			Data:    ce.data,
+			Expires: ce.expires,
+			Hit:     true,
 		}, nil
 	}
 
@@ -94,9 +94,9 @@ func (c *Client) getEntry(key string) (Entry, error) {
 	}
 
 	return Entry{
-		data:    data,
-		expires: nowFunc().Add(time.Second * time.Duration(expire)),
-		hit:     false,
+		Data:    data,
+		Expires: nowFunc().Add(time.Second * time.Duration(expire)),
+		Hit:     false,
 	}, nil
 }
 
@@ -110,7 +110,7 @@ func (c *Client) Get(key string) ([]byte, error) {
 		return nil, err
 	}
 
-	return e.data, err
+	return e.Data, err
 }
 
 // todo(jhamren): if perf needs it, implement this properly with MGET
