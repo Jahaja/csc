@@ -136,6 +136,10 @@ func (c *Client) GetEntries(keys []string) ([]Entry, error) {
 		}
 	}
 
+	if len(missing) == 0 {
+		return entries, nil
+	}
+
 	dlog("client.getentries.missing: %p k=%s\n", c, missing)
 
 	// fetch the missing keys in a single MGET
