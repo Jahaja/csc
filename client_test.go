@@ -1,6 +1,7 @@
 package csc
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -203,4 +204,50 @@ func TestBroadcastingClient_prefix(t *testing.T) {
 	}
 
 	time.Sleep(time.Millisecond * 100)
+}
+
+func TestBroadcastingClient_GetEntries(t *testing.T) {
+	key := "foo"
+	value := "123456"
+
+	pool, _ := NewDefaultBroadcastingPool(PoolOptions{MaxEntries: 100, RedisAddress: ":6379"})
+
+	time.Sleep(time.Millisecond * 100)
+
+	c, err := pool.Get()
+	if err != nil {
+		t.Fatalf("failed to get client from pool: %v", err)
+	}
+
+	keys := []string{}
+	for i := 0; i < 10; i++ {
+		k := fmt.Sprintf("%s-%d", key, i)
+		if err := c.Set(k, []byte(value), 60); err != nil {
+			t.Fatalf("failed to set: %v", err)
+		}
+
+		keys = append(keys, k)
+	}
+
+	// add a few that doesn't exist
+	keys = append(keys, "bar1")
+	keys = append(keys, "bar2")
+	keys = append(keys, "bar3")
+
+	entries, err := c.GetEntries(keys)
+	if len(entries) != 13 {
+		t.FailNow()
+	}
+
+	if !entries[10].Miss() {
+		t.FailNow()
+	}
+
+	if !entries[11].Miss() {
+		t.FailNow()
+	}
+
+	if !entries[12].Miss() {
+		t.FailNow()
+	}
 }

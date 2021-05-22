@@ -147,8 +147,8 @@ func (c *cache) get(key string) []byte {
 	return ce.data
 }
 
-func (c *cache) getm(keys ...string) [][]byte {
-	var results [][]byte
+func (c *cache) getm(keys ...string) []cacheEntry {
+	results := make([]cacheEntry, 0, len(keys))
 
 	c.Lock()
 	defer c.Unlock()
@@ -163,7 +163,7 @@ func (c *cache) getm(keys ...string) [][]byte {
 			dlog("cache.getm.miss: %p k=%s\n", c, keys)
 		}
 
-		results = append(results, e.data)
+		results = append(results, e)
 	}
 
 	return results
